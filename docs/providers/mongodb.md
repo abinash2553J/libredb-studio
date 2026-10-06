@@ -189,11 +189,22 @@ Caveats baked into this approach:
   it, and the profiler reads a dotted column by walking the sampled document, so `address.city` is
   profiled from its real values rather than as absent. A top-level key that literally contains a
   dot is walked the same way, as a nested path, so it profiles as absent.
-- **Generated test data reconstructs nested paths.** Generate Test Data treats dotted
+- **Generated test data reconstructs nested paths.** Both row menus offer Generate Test Data on a
+  collection, because the provider declares `supportsTestDataGeneration: true` ([§9](#9-capabilities--labels)),
+  and the dialog writes one `insertMany`. It treats dotted
   inferred columns as nested paths: when `address`, `address.city`, and `address.geo.lat` are
   present, only the leaf fields are generated and the resulting document is rebuilt as
   `{ address: { city, geo: { lat } } }`. A parent path with listed descendants does not receive a
   scalar value. An `object` field with no listed descendants is generated as `{}`.
+  The generator is picked by the **leaf** of the path, so `address.city` is a city and
+  `address.zip` a postal code rather than two street addresses, and the value takes the JSON type
+  the inferred type names: `number`, `int` and `double` as JSON numbers, `boolean` as a boolean,
+  `array` as `[]`, `null` as `null`, and `date`, `objectId`, `uuid`, `long` and `decimal` as the
+  `$date`, `$oid`, `$uuid`, `$numberLong` and `$numberDecimal` wrappers, which the query reader
+  ([§3.1](#extended-json-in-the-query)) turns into those BSON types. A `mixed(...)` field is written as its first non-null type.
+  `_id` is left to the server. Measured on `mongo:7` on 2026-10-06: the generated command ran
+  through the provider and `$type` read back `int`, `double`, `long`, `decimal`, `bool`, `array`,
+  `date`, `objectId`, `binData` (UUID subtype 4) and `null`.
 
 - **Arrays are named and left closed.** `items.sku` addresses one value *per array entry*, so it
   does not mean on an array what the same syntax means on a subdocument; listing it in a flat field
