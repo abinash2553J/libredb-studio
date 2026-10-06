@@ -103,8 +103,8 @@ function setNestedValue(doc: Record<string, unknown>, path: string, value: unkno
 
   for (let index = 0; index < parts.length - 1; index++) {
     const part = parts[index];
-    if (typeof current[part] !== "object" || current[part] === null) {
-      current[part] = {};
+    if (!Object.hasOwn(current, part) || typeof current[part] !== "object" || current[part] === null) {
+      current[part] = Object.create(null) as Record<string, unknown>;
     }
     current = current[part] as Record<string, unknown>;
   }
@@ -243,7 +243,7 @@ export function TestDataGenerator({
           ),
       );
       const docs = Array.from({ length: rowCount }, (_, i) => {
-        const doc: Record<string, unknown> = {};
+        const doc = Object.create(null) as Record<string, unknown>;
         for (const col of leafCols) {
           const gen = FAKE[col.faker.generator as keyof typeof FAKE];
           const type = (col.baseType ?? col.type).toLowerCase();
