@@ -56,7 +56,7 @@ async function offeredOn(type: DatabaseType): Promise<boolean> {
 }
 
 describe("supportsTestDataGeneration (#1468)", () => {
-  test.each(TYPES)("%s declares the flag explicitly", async (type) => {
+  test.each(TYPES)("%s resolves the flag to a boolean", async (type) => {
     const provider = await createDatabaseProvider(CENSUS_CONNECTION[type]);
     // `typeof` because the menus gate on `=== true`, so an absent flag and a declared `false`
     // render the same and only this assertion tells them apart.
