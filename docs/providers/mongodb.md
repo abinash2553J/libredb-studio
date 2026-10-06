@@ -454,7 +454,8 @@ The `hasSource` column is [§6 Object source](#object-source-789).
 `acceptsRowWrites` on `collection` is the **per-kind** half and is deliberately not conjoined with
 this provider's engine-wide `supportsInlineRowEdit: false` ([§9](#9-capabilities--labels)). That flag
 is about the results grid's `UPDATE … SET`, which has no MongoDB spelling; an import into a
-collection is an ordinary `insertMany`. A view carries no such declaration: the server reports
+collection is an ordinary `insertMany`, and so is Generate Test Data, which the engine declares on
+its own with `supportsTestDataGeneration: true`. A view carries no such declaration: the server reports
 `info.readOnly: true` on every one, on the same call that classifies it.
 
 #### What is not declared, and why each absence is a measurement
@@ -1051,6 +1052,7 @@ request here.
 | `supportsExternalQueryLimiting` | `false` |
 | `supportsCreateTable` | `false` |
 | `supportsInlineRowEdit` | `false` — the query language is JSON commands, so there is no `UPDATE ... SET` for the results grid's inline editor to emit |
+| `supportsTestDataGeneration` | `true` - a separate fact from the flag above: the Generate Test Data dialog writes one `insertMany` command, which a collection takes ([§3.3](#33-sampling-based-schema-inference-nested-to-three-levels)), so both row menus offer it (#1468) |
 | `supportsResultPagination` | `false` — `prepareQuery` pins `offset` to 0 and returns the command untouched, so page two would be page one. The find document's own `limit` stays the bound here (#816) |
 | `supportsTransactions` | `false` — multi-document transactions need a client session this provider does not hold, so BEGIN/COMMIT/ROLLBACK and SANDBOX are not offered; they used to be, and answered HTTP 400 (#464) |
 | `declaresForeignKeys` | `false` — MongoDB has no foreign key constraint at all, so an empty `foreignKeys` list here is the engine's model and not this database's shape |

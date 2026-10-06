@@ -879,6 +879,29 @@ export interface ProviderCapabilities {
    */
   inlineEditRefusedColumns?: { readonly type: string; readonly reason: string };
   /**
+   * Whether this provider can take the rows the Generate Test Data dialog writes
+   * (`src/components/TestDataGenerator.tsx`): one multi-row `INSERT INTO ... VALUES` for a
+   * SQL engine, one `insertMany` command for a JSON-language engine. False or absent keeps
+   * the item out of both row menus (`src/components/object-tree/row-actions.ts` and
+   * `src/components/schema-explorer/TableItem.tsx`).
+   *
+   * It is NOT `supportsInlineRowEdit`, which answers whether the results grid's
+   * `UPDATE ... SET` runs. The menus borrowed that flag until #1468, which made the
+   * generator unreachable on MongoDB: its collection takes the generator's `insertMany`,
+   * and its grid has no `UPDATE` to emit.
+   *
+   * The per-kind `acceptsRowWrites` still applies on top: `offersTestDataGeneration` in
+   * `src/lib/db/object-kinds.ts` conjoins the two, so a view is never offered it on an
+   * engine that declares this flag.
+   *
+   * Optional for the same published-interface reason as `supportsInlineRowEdit`
+   * (`src/exports/types.ts`): a required field added after the fact stops every external
+   * implementer compiling. Every provider in this repo declares it, and the menus gate on
+   * `=== true`, so an absent flag reads as not offered rather than inheriting a permissive
+   * default.
+   */
+  supportsTestDataGeneration?: boolean;
+  /**
    * Whether this provider can be asked for the page AFTER the first one — whether
    * `prepareQuery(sql, { limit, offset })` with a positive `offset` really applies it.
    *
