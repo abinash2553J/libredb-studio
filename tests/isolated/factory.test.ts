@@ -353,18 +353,41 @@ const nodeEnvBefore = process.env.NODE_ENV;
 (process.env as Record<string, string>).NODE_ENV = "production";
 const {
   createDatabaseProvider,
-  getOrCreateProvider,
+  getOrCreateProvider: rawGetOrCreateProvider,
   removeProvider,
   clearProviderCache,
   getProviderCacheStats,
   evictIdleProviders,
   registerShutdownHandlers,
-  acquireExecutionProfileProvider,
+  acquireExecutionProfileProvider: rawAcquireExecutionProfileProvider,
+  profiledCacheKey,
   findOpenSingleWriterProvider,
+  isSingleWriterFileOpen,
   getExecutionProfileCacheStats,
   withOneShotTunnel,
   assertReadOnlyHonoured,
 } = await import("@/lib/db/factory");
+// Existing SQLite cache tests exercise trusted callers. Explicitly grant their file posture;
+// denied callers are tested separately against the unwrapped factory below.
+function getOrCreateProvider(...args: Parameters<typeof rawGetOrCreateProvider>) {
+  const [connection, options, execution] = args;
+  return rawGetOrCreateProvider(
+    connection,
+    options,
+    execution ?? (connection.type === "sqlite" ? { allowExternalFileAccess: true } : {}),
+  );
+}
+// The same for the profiled path: existing SQLite agent tests exercise trusted requesters, and the
+// denied ones are tested against the unwrapped acquisition below.
+function acquireExecutionProfileProvider(...args: Parameters<typeof rawAcquireExecutionProfileProvider>) {
+  const [connection, profile, options, requester] = args;
+  return rawAcquireExecutionProfileProvider(
+    connection,
+    profile,
+    options,
+    requester ?? (connection.type === "sqlite" ? { allowExternalFileAccess: true } : {}),
+  );
+}
 if (nodeEnvBefore === undefined) {
   delete (process.env as Record<string, string>).NODE_ENV;
 } else {
@@ -1964,6 +1987,26 @@ describe("acquireExecutionProfileProvider", () => {
       expect(getExecutionProfileCacheStats().size).toBe(0);
     });
 
+    test("nor can an execution context: a readOnly in it is refused, so no read-only handle enters the writable cache", async () => {
+      // The execution context is server-injected, and getOrCreateProvider takes the file-access
+      // posture on it (non-admin DuckDB file access). A readOnly riding along used to reach the provider while the key
+      // ignored it: the read-only provider was then served to every later editor request, or a
+      // read-only caller was handed the writable one. Refused before the cache is touched.
+      const conn = await seedFileConnection();
+
+      for (const readOnly of [true, false]) {
+        // oxlint-disable-next-line no-await-in-loop -- each refusal is read before the next call, and neither may reach the cache.
+        const refusal: unknown = await getOrCreateProvider(conn, {}, { readOnly } as never).catch((e: unknown) => e);
+        expect(refusal).toBeInstanceOf(DatabaseConfigError);
+        expect((refusal as Error).message).toContain("takes no readOnly");
+      }
+      expect(getProviderCacheStats().size).toBe(0);
+
+      // The editor is still served a writable provider.
+      const shared = await getOrCreateProvider(conn);
+      expect((await shared.query("INSERT INTO t (id, v) VALUES (2, 'editor')")).rowCount).toBe(1);
+    });
+
     test("refuses an in-memory sqlite target for the agent profile (fail closed)", async () => {
       const conn = makeConnection("sqlite", { id: "sqlite-memory-agent", database: ":memory:" });
 
@@ -1975,6 +2018,63 @@ describe("acquireExecutionProfileProvider", () => {
       expect((error as ExecutionProfileError).reasonCode).toBe("PROFILE_UNSUPPORTED_TARGET");
       expect(getExecutionProfileCacheStats().size).toBe(0);
     });
+
+    test("every profile opens a sqlite handle only under a trusted posture, as the editor does", async () => {
+      // SQLite's drivers cannot confine what a statement reads, read-only included, so a denied
+      // requester is refused at connect on the profiled path too, and an absent one reads as denied.
+      const conn = await seedFileConnection();
+
+      for (const profile of ["agent-read-only", "agent-operations", "agent-handover"] as const) {
+        for (const requester of [{ allowExternalFileAccess: false }, {}]) {
+          // oxlint-disable-next-line no-await-in-loop -- each refusal is read before the next call, and none may reach the cache.
+          const refusal: unknown = await rawAcquireExecutionProfileProvider(conn, profile, {}, requester).catch(
+            (e: unknown) => e,
+          );
+          expect(refusal).toBeInstanceOf(DatabaseConfigError);
+          expect((refusal as Error).message).toContain("require an administrator");
+        }
+      }
+      expect(getExecutionProfileCacheStats().size).toBe(0);
+
+      const agent = await rawAcquireExecutionProfileProvider(
+        conn,
+        "agent-read-only",
+        {},
+        { allowExternalFileAccess: true },
+      );
+      expect(await agent.queryReadOnly!("SELECT v FROM t", { ...AGENT_BUDGET })).toMatchObject({
+        rows: [{ v: "seeded" }],
+      });
+    });
+
+    test("a profiled sqlite handle a trusted requester opened is never served to a denied one", async () => {
+      // The profiled cache splits by posture for an engine that reads it, as the writable cache does;
+      // without that, the denied request below would be handed the trusted handle cached first.
+      const conn = await seedFileConnection();
+      await rawAcquireExecutionProfileProvider(conn, "agent-read-only", {}, { allowExternalFileAccess: true });
+
+      const refusal: unknown = await rawAcquireExecutionProfileProvider(
+        conn,
+        "agent-read-only",
+        {},
+        { allowExternalFileAccess: false },
+      ).catch((e: unknown) => e);
+
+      expect(refusal).toBeInstanceOf(DatabaseConfigError);
+      expect(getExecutionProfileCacheStats()).toEqual({ size: 1, connections: [conn.id] });
+    });
+  });
+
+  test("the profiled key carries the requester's posture only for an engine that reads it", async () => {
+    const sqlite = makeConnection("sqlite", { id: "sqlite-profiled-key", database: "/data/profiled-key.db" });
+    const denied = await profiledCacheKey(sqlite, "agent-read-only", { allowExternalFileAccess: false });
+
+    expect(await profiledCacheKey(sqlite, "agent-read-only", { allowExternalFileAccess: true })).not.toBe(denied);
+    // Absent reads as denied, as it does for the writable key.
+    expect(await profiledCacheKey(sqlite, "agent-read-only")).toBe(denied);
+    expect(await profiledCacheKey(pgConn(), "agent-read-only", { allowExternalFileAccess: false })).toBe(
+      await profiledCacheKey(pgConn(), "agent-read-only", { allowExternalFileAccess: true }),
+    );
   });
 });
 
@@ -2130,6 +2230,202 @@ describe("single-writer file reuse", () => {
     // The shape the test-connection route hands this on every request that is not a
     // file engine at all (a connection-string connection carries no `database`).
     expect(findOpenSingleWriterProvider(makeConnection("mongodb", { database: undefined }))).toBeNull();
+  });
+
+  // DuckDB file-access posture in the cache and the borrow (non-admin DuckDB file access). This is the
+  // critical ruling: an admin's full handle must never be shared with, nor borrowed
+  // by, a non-admin, and the reverse. Run against the real @duckdb/node-api driver.
+
+  test("an admin and a non-admin resolving the same DuckDB connection get two distinct handles", async () => {
+    // Same connection id and :memory: target; only the server-derived posture differs, so the
+    // cache key's posture segment is what keeps them apart. Reaching the admin handle would hand
+    // a non-admin full filesystem access, which is the whole of the fix.
+    const conn = makeConnection("duckdb", { id: "duck-posture-split", database: ":memory:" });
+    const admin = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: true });
+    const nonAdmin = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: false });
+
+    expect(nonAdmin).not.toBe(admin);
+    // Each asked again under its own posture is served from the cache, so the split is stable.
+    expect(await getOrCreateProvider(conn, {}, { allowExternalFileAccess: true })).toBe(admin);
+    expect(await getOrCreateProvider(conn, {}, { allowExternalFileAccess: false })).toBe(nonAdmin);
+    // And the handles really do differ in reach: the engine reports it.
+    const setting = "SELECT current_setting('enable_external_access') AS v";
+    expect((await admin.query!(setting)).rows).toEqual([{ v: true }]);
+    expect((await nonAdmin.query!(setting)).rows).toEqual([{ v: false }]);
+    await removeProvider(conn.id);
+  });
+
+  test("a file-backed DuckDB record reopened under a flipped posture closes the stale handle first", async () => {
+    // Two :memory: postures are two independent databases and may both stay open, but one FILE
+    // under two postures would be two read-write handles on one file (the operator-edits-roles case
+    // the api test reproduces end to end). The second open must close the first, leaving one writer.
+    const file = join(dir, "posture-flip-close.duckdb");
+    const conn = makeConnection("duckdb", { id: "duck-flip-close", database: file });
+    const admin = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: true });
+    // The stale handle's disconnect rejects, so the warn-and-continue path runs; it still closes the
+    // real handle first, so the file lock is released for the reopen below.
+    // The order of the stale close and the new open is recorded, since the close has to come first:
+    // a stale handle merely dropped from the cache, or closed after the reopen, is still a second
+    // writer on the file while the new one opens.
+    const order: string[] = [];
+    const realDisconnect = admin.disconnect.bind(admin);
+    admin.disconnect = async () => {
+      await realDisconnect();
+      order.push("close");
+      throw new Error("disconnect failed");
+    };
+    const { DuckDBProvider } = await import("@/lib/db/providers/sql/duckdb");
+    const realConnect = DuckDBProvider.prototype.connect;
+    const connectSpy = spyOn(DuckDBProvider.prototype, "connect").mockImplementation(async function (
+      this: InstanceType<typeof DuckDBProvider>,
+    ) {
+      order.push("open");
+      return realConnect.call(this);
+    });
+
+    const nonAdmin = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: false }).finally(() =>
+      connectSpy.mockRestore(),
+    );
+
+    expect(nonAdmin).not.toBe(admin);
+    expect(admin.isConnected()).toBe(false);
+    expect(order).toEqual(["close", "open"]);
+    // One record, one entry: the stale full-reach handle was closed rather than left beside the new
+    // one. On the base before the fix this was two entries on one file.
+    expect(getProviderCacheStats()).toEqual({ size: 1, connections: ["duck-flip-close"] });
+    await removeProvider(conn.id);
+  });
+
+  test("a reopen under a new key closes only the stale handle of its own record, not another record on the file", async () => {
+    // The stale close is bounded to one connection id. A different record naming the same file is
+    // the separate, pre-existing D240 case, and opening it must not tear down the first record's
+    // handle: otherwise anyone naming the path would close every handle on it.
+    const file = join(dir, "posture-flip-other-id.duckdb");
+    const first = makeConnection("duckdb", { id: "duck-flip-first", database: file });
+    const second = makeConnection("duckdb", { id: "duck-flip-second", database: file });
+    const held = await getOrCreateProvider(first, {}, { allowExternalFileAccess: true });
+
+    const opened = await getOrCreateProvider(second, {}, { allowExternalFileAccess: false }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    // Windows refuses a second read-write handle on a file this process holds; Linux and macOS open it.
+    if (process.platform === "win32") {
+      expect(opened).toBeInstanceOf(Error);
+    } else {
+      expect(opened).toBeNull();
+    }
+    expect(held.isConnected()).toBe(true);
+    expect(getProviderCacheStats().connections).toContain("duck-flip-first");
+    await removeProvider(second.id);
+    await removeProvider(first.id);
+  });
+
+  test("a LibreDB record reopened under a new key on the same file closes its stale handle first", async () => {
+    // LibreDB is the other engine that declares `singleWriterFile`. An edit that moves the key and keeps
+    // the file (here a credential) used to leave the old handle open, and the reopen was refused by the
+    // file lock; the stale handle is now closed first, so the reopen succeeds as the file's only handle.
+    const conn = libredbConn();
+    const before = await getOrCreateProvider(conn);
+
+    const after = await getOrCreateProvider({ ...conn, password: "edited" });
+
+    expect(after).not.toBe(before);
+    expect(before.isConnected()).toBe(false);
+    expect(after.isConnected()).toBe(true);
+    expect(getProviderCacheStats()).toEqual({ size: 1, connections: [conn.id] });
+    await removeProvider(conn.id);
+  });
+
+  test("findOpenSingleWriterProvider does not hand an admin DuckDB handle to a non-admin caller, nor the reverse", async () => {
+    const file = join(dir, "posture-borrow.duckdb");
+    const conn = makeConnection("duckdb", { id: "duck-borrow-admin", database: file });
+    const admin = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: true });
+
+    // A non-admin borrow is refused the admin's full handle (it would open its own instead);
+    // the admin posture borrows its own handle back.
+    expect(findOpenSingleWriterProvider(conn, false)).toBeNull();
+    expect(findOpenSingleWriterProvider(conn, true)).toBe(admin);
+    // And a bare lookup (no posture) reads as deny, so it does not reach the admin handle either.
+    expect(findOpenSingleWriterProvider(conn)).toBeNull();
+    await removeProvider(conn.id);
+
+    // The reverse: a non-admin handle open, an admin borrow does not reach it.
+    const nonAdmin = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: false });
+    expect(findOpenSingleWriterProvider(conn, true)).toBeNull();
+    expect(findOpenSingleWriterProvider(conn, false)).toBe(nonAdmin);
+    await removeProvider(conn.id);
+  });
+
+  test("an operations acquisition borrows the open DuckDB handle of its requester's editor posture (B49)", async () => {
+    // An admin running an Operate agent on a connection only admins use, while the editor holds
+    // the file under the admin's posture. The agent profile itself carries no posture, so before
+    // the requester's was passed the borrow read as deny, skipped the admin's handle, and the run
+    // opened a second, read-only handle: a frozen snapshot on Linux and macOS, a refusal on Windows.
+    const file = join(dir, "operations-admin.duckdb");
+    const conn = makeConnection("duckdb", { id: "duck-ops-admin", database: file });
+    const editor = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: true });
+
+    const agent = await acquireExecutionProfileProvider(
+      conn,
+      "agent-operations",
+      {},
+      { allowExternalFileAccess: true },
+    );
+
+    expect(agent).toBe(editor);
+    // Borrowed, never owned, exactly as the posture-free borrow is.
+    expect(getExecutionProfileCacheStats()).toEqual({ size: 0, connections: [] });
+    await removeProvider(conn.id);
+  });
+
+  test("an operations acquisition never borrows a handle wider than its requester's posture", async () => {
+    // The fail-closed default: no requester posture reads as deny, so an admin's full handle is
+    // not lent to it. It opens its own read-only handle beside the writer instead, which Windows
+    // refuses for a file this process already holds (docs/providers/duckdb.md section 3.8).
+    const file = join(dir, "operations-deny.duckdb");
+    const conn = makeConnection("duckdb", { id: "duck-ops-deny", database: file });
+    const editor = await getOrCreateProvider(conn, {}, { allowExternalFileAccess: true });
+
+    const acquired = await acquireExecutionProfileProvider(conn, "agent-operations").then(
+      (provider) => provider,
+      (error: unknown) => error,
+    );
+
+    if (process.platform === "win32") {
+      expect(acquired).toBeInstanceOf(Error);
+    } else {
+      expect(acquired).not.toBe(editor);
+      expect(getExecutionProfileCacheStats().size).toBe(1);
+    }
+    await removeProvider(conn.id);
+  });
+
+  test("isSingleWriterFileOpen sees a held file whatever posture holds it, which the borrow cannot", async () => {
+    // The question Test Connection asks when the borrow answers null: is the file open under the
+    // OTHER posture, where a second read-write handle must not be opened beside it.
+    const file = join(dir, "posture-held.duckdb");
+    const conn = makeConnection("duckdb", { id: "duck-held-admin", database: file });
+    const other = makeConnection("duckdb", { id: "duck-held-other", database: file });
+    expect(isSingleWriterFileOpen(other)).toBe(false);
+
+    await getOrCreateProvider(conn, {}, { allowExternalFileAccess: true });
+
+    expect(findOpenSingleWriterProvider(other, false)).toBeNull();
+    expect(isSingleWriterFileOpen(other)).toBe(true);
+    await removeProvider(conn.id);
+    // Closed, so nothing holds it any more.
+    expect(isSingleWriterFileOpen(other)).toBe(false);
+  });
+
+  test("isSingleWriterFileOpen is false for a connection with no file, an anonymous in-memory one included", async () => {
+    const memory = makeConnection("duckdb", { id: "duck-held-memory", database: ":memory:" });
+    await getOrCreateProvider(memory, {}, { allowExternalFileAccess: true });
+
+    expect(isSingleWriterFileOpen(memory)).toBe(false);
+    expect(isSingleWriterFileOpen(makeConnection("mongodb", { database: undefined }))).toBe(false);
+    await removeProvider(memory.id);
   });
 
   test("an engine that admits many handles is not borrowed from, and keeps its read-only boundary", async () => {
@@ -2783,4 +3079,18 @@ describe("a tunnelled provider fingerprints the far end (X23)", () => {
     });
     expect(seen).toBe(await connectionFingerprint(stored));
   });
+});
+
+test("a denied SQLite caller cannot borrow a cached administrator handle", async () => {
+  const connection = makeConnection("sqlite", { database: ":memory:" });
+  const trusted = await getOrCreateProvider(connection, {}, { allowExternalFileAccess: true });
+  try {
+    await expect(getOrCreateProvider(connection, {}, { allowExternalFileAccess: false })).rejects.toThrow(
+      "require an administrator",
+    );
+    expect(trusted.isConnected()).toBe(true);
+    expect((await trusted.query("SELECT 1 AS value")).rows).toEqual([{ value: 1 }]);
+  } finally {
+    clearProviderCache();
+  }
 });

@@ -43,6 +43,12 @@ services:
         caproverExtra:
             containerHttpPort: '3000'
     $$cap_appname-discovery:
+        # CapRover creates the apps one at a time and removes nothing when a
+        # step fails, so this app, the one that holds the Docker socket, is
+        # created after Studio: an install that stops early never leaves it
+        # running on its own.
+        depends_on:
+            - $$cap_appname
         image: ghcr.io/libredb/libredb-studio:$$cap_version
         restart: always
         # A one-click command replaces the image entrypoint, so the exporter
@@ -118,12 +124,15 @@ caproverOneClickApp:
             app has no port and is not exposed to the internet. It records the
             name and image of every app on this server and the database
             password settings of your database apps, in a file that only the
-            Studio app can read. Connected databases are listed for the Studio
-            admin login only, but the standard login can read that file through
-            a DuckDB connection, so give it only to someone you trust with
-            those passwords. Enable HTTPS for Studio before you sign in for the
-            first time. If you do not want the Docker socket on this server,
-            install the plain LibreDB Studio entry instead.
+            Studio app and its admin login can read. Connected databases are
+            listed for the Studio admin login only, and the standard login
+            cannot read that file through a DuckDB connection. Still give the
+            standard login only to someone you trust, because a connection that
+            names a database file on this server is not limited to a directory
+            (https://github.com/libredb/libredb-studio/blob/main/docs/providers/duckdb.md#143-the-file-path-is-a-trust-boundary-for-every-role-and-statement-reach-is-the-admins).
+            Enable HTTPS for Studio before you sign in for the first time. If
+            you do not want the Docker socket on this server, install the plain
+            LibreDB Studio entry instead.
 
             LibreDB Studio is a modern, open-source, web-based SQL IDE for the cloud era.
             This variant connects itself to the PostgreSQL, MySQL, MariaDB,
@@ -132,6 +141,9 @@ caproverOneClickApp:
             follows them as you add or remove them.
 
             What you can set below (defaults are sensible - you can usually just click Deploy):
+              - App name: at most 39 characters, starting with a letter. The
+                second app is named after it with -discovery appended, and the
+                project CapRover puts both apps in takes the same name.
               - Version: the image tag to deploy (a tested fixed version by default).
               - Admin login: full access, including maintenance/admin tools. The
                 connected databases are listed for this login only.
@@ -190,10 +202,13 @@ caproverOneClickApp:
             the connection rather than by Studio. Give it a database user with
             the rights you actually want it to have.
 
-            On this variant the standard login can also read the passwords of
-            the databases Studio found: a DuckDB connection reads any file the
-            Studio app can read, the discovery file included. Give the standard
-            login only to someone you trust with every database on this server.
+            On this variant the standard login cannot read the passwords of
+            the databases Studio found: a non-admin DuckDB connection cannot read
+            the discovery file. The admin login can, so treat it as holding
+            every database's password. Still give the standard login only to
+            someone you trust, because a connection that names a database file
+            on this server is not limited to a directory:
+            https://github.com/libredb/libredb-studio/blob/main/docs/providers/duckdb.md#143-the-file-path-is-a-trust-boundary-for-every-role-and-statement-reach-is-the-admins
 
             Save these credentials now. This screen does not show them again,
             but they stay readable as ADMIN_PASSWORD and USER_PASSWORD under the
@@ -231,5 +246,5 @@ caproverOneClickApp:
             See https://github.com/libredb/libredb-studio
     displayName: LibreDB Studio (auto-connect)
     isOfficial: false
-    description: LibreDB Studio that connects itself to the PostgreSQL, MySQL, MariaDB, MongoDB and Redis databases on this server. Adds a discovery app that reads the Docker socket.
+    description: LibreDB Studio that connects itself to this server's PostgreSQL, MySQL, MariaDB, Percona, MongoDB, Redis, Valkey, KeyDB and Dragonfly databases. Adds a discovery app that reads the Docker socket.
     documentation: Image and docs - https://github.com/libredb/libredb-studio . Uses ghcr.io/libredb/libredb-studio for both apps. The -discovery app mounts the Docker socket; see deploy/caprover/README.md in that repository.

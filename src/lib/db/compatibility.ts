@@ -251,6 +251,56 @@ export const READ_ONLY_ENFORCED: Record<DatabaseType, boolean> = Object.freeze({
 });
 
 /**
+ * Which shipped engines open their editor handle under a file-access posture: their provider reads
+ * `ProviderExecutionContext.allowExternalFileAccess` and opens with external access off when it is
+ * denied, while the database stays writable for DuckDB. SQLite refuses denied access entirely
+ * because its drivers cannot confine statement-level file access. The static answer is
+ * `ProviderCapabilities.readsFileAccessPosture`.
+ *
+ * Static because its readers decide before a provider exists: `providerCacheKey` carries the deny
+ * posture as a key segment so a denied and a full-reach handle of one connection never share an
+ * entry, and `findOpenSingleWriterProvider` lends a handle only to a caller of its own posture. Both
+ * run while computing the key to find or open a provider, so neither can ask one. Reading
+ * `connection.type` at those two call sites was the alternative and is forbidden by `CLAUDE.md`; this
+ * map is how the behaviour stays capability-driven, exactly as `READ_ONLY_ENFORCED` is.
+ *
+ * An exhaustive Record for the reason `EXTERNAL` gives, so a new type-id cannot join without someone
+ * answering, and `tests/unit/db/reads-file-access-posture-capability.test.ts` holds every entry equal
+ * to what that engine's provider declares. Frozen like the records above it.
+ */
+export const READS_FILE_ACCESS_POSTURE: Readonly<Record<DatabaseType, boolean>> = Object.freeze({
+  postgres: false,
+  mysql: false,
+  sqlite: true,
+  libsql: false,
+  // The engine whose editor handle opens under the posture: external access off for every role but
+  // admin, and for every role on a seed a non-admin role can use. SQLite refuses a denied handle instead.
+  duckdb: true,
+  oracle: false,
+  db2: false,
+  mssql: false,
+  clickhouse: false,
+  druid: false,
+  trino: false,
+  cassandra: false,
+  elasticsearch: false,
+  opensearch: false,
+  mongodb: false,
+  couchbase: false,
+  redis: false,
+  prometheus: false,
+  kafka: false,
+  etcd: false,
+  neo4j: false,
+  milvus: false,
+  qdrant: false,
+  influxdb: false,
+  influxdb3: false,
+  oxia: false,
+  libredb: false,
+});
+
+/**
  * Which shipped engines a seed connection may expose to MCP clients (#246): the seed schema refuses
  * `mcp: true` at load on an engine where this answers false, naming the engine, so an opt-in the
  * product does not honour fails the file instead of listing a connection. Static for the reason
@@ -528,7 +578,7 @@ export const WIRE_COMPATIBLE_ENGINES: readonly WireCompatibleEngine[] = [
     probedVersion: "Percona Server for MySQL 8.4.11-11 (version() reports 8.4.11-11)",
     caveats: [
       "Behaves as MySQL throughout: all fifteen surfaces answer, row counts and sizes are correct (2000 rows read as 2000, 114688 bytes as 114688), indexes and a foreign key are read back, and Analyze, Optimize and Check all succeed.",
-      "Nothing on screen says Percona: version() answers a bare 8.4.11-11 and the product name lives in @@version_comment (Percona Server (GPL), Release 11), which the provider does not read - so the overview is indistinguishable from a stock MySQL 8.4.",
+      "version() answers a bare 8.4.11-11 and the product name lives only in @@version_comment (Percona Server (GPL), Release 11), so the overview reads that comment and names the server Percona Server 8.4.11-11 (#1444); before that it was indistinguishable from a stock MySQL 8.4.",
     ],
   },
   {

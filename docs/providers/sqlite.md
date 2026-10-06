@@ -142,9 +142,9 @@ case "sqlite": {
 }
 ```
 
-`execution` is the server-injected [`ProviderExecutionContext`](../../src/lib/db/types.ts) — empty
-on the normal path, and carrying the read-only flag only when
-`acquireExecutionProfileProvider` builds an agent provider ([§12](#12-agent-read-only-execution-profile-328)).
+`execution` is the server-injected [`ProviderExecutionContext`](../../src/lib/db/types.ts).
+Every cached path passes the server-derived `allowExternalFileAccess` posture, and SQLite refuses to open when it is `false` (the last section of this page).
+`acquireExecutionProfileProvider` adds the read-only flag when it builds an agent provider ([§12](#12-agent-read-only-execution-profile-328)).
 
 ---
 
@@ -157,7 +157,7 @@ on the normal path, and carrying the read-only flag only when
 paths are `path.resolve()`-d to an absolute path and **rejected if they contain a NUL byte**. Parent
 directories are created on connect.
 
-> **NUL rejection is the only path validation — by design.** `../` segments are legal and simply
+> **NUL rejection and reserved server files are checked on connect.** `../` segments are legal and simply
 > resolve into the absolute path. This follows the feature's trust model: a connection's
 > `database`/`connectionString` path is set by whoever configures the connection (an
 > authenticated user of this Studio instance) — pointing Studio at an arbitrary server-side file is
@@ -1327,7 +1327,7 @@ bun run test:coverage                                    # CI coverage workflow
 ## 12. Agent read-only execution profile (#328)
 
 The agent programme (epic #325) never talks to the shared, writable provider. It acquires a
-**dedicated provider keyed by (connection id, execution profile)** via
+**dedicated provider keyed by (connection id, execution profile)**, plus the requester's file-access posture, via
 `acquireExecutionProfileProvider` ([factory.ts](../../src/lib/db/factory.ts)) and runs every
 statement through `queryReadOnly()`. See [postgres.md §12](./postgres.md#12-agent-read-only-execution-profile-328)
 for the acquisition/caching rules, which are provider-independent; this section is the SQLite half.
@@ -1526,8 +1526,7 @@ not apply to SQLite ([§3.4](#34-no-transactions-api-no-cancellation-no-pool)).
   repairs the INTEGER case only).
 - **`:memory:` is ephemeral** — data is lost on disconnect; intended for trials/tests.
 - **Single schema (`main`)** — `ATTACH`ed databases are not surfaced.
-- **No path sandboxing (by design).** `getDatabasePath()` validates only that the path contains
-  no NUL byte; the resolved absolute path — `..` segments included — is used as-is. This grants an
+- **No path sandboxing (by design).** `getDatabasePath()` rejects NUL bytes and reserved server files; the resolved absolute path — `..` segments included — is used as-is. This grants an
   *unauthenticated* client no access: the path comes from an authenticated user's connection config,
   and reading arbitrary server-side files by path is the feature. The distinction that matters for
   multi-user installs is the next one down: **authenticated does not imply trusted with the host
@@ -1556,3 +1555,17 @@ not apply to SQLite ([§3.4](#34-no-transactions-api-no-cancellation-no-pool)).
 - Tests: [`tests/integration/db/sqlite-provider.test.ts`](../../tests/integration/db/sqlite-provider.test.ts)
 - API contract: [`docs/API_DOCS.md`](../API_DOCS.md)
 - Sibling provider docs: [PostgreSQL](./postgres.md) · [MySQL](./mysql.md) · [Oracle](./oracle.md) · [SQL Server](./mssql.md) · [Trino](./trino.md) · [Redis](./redis.md)
+
+
+Connection targets reserve Studio's storage database, its WAL/SHM files and bootstrap
+credentials (including backups and temporary files). This applies to every role.
+Checks normalize paths, resolve symbolic links and compare existing file identities
+so hard links cannot alias reserved files. Other user database files beside them remain usable.
+
+SQLite connections are refused when the server-derived file-access posture is denied,
+including agent handles. HTTP and MCP derive that posture from the verified role and
+managed connection: non-admin callers and seeds shared with non-admin roles are denied.
+SQLite's adapters cannot confine statement-level file access, so a denied connection
+cannot be opened safely. Administrators retain SQLite access on private connections.
+Embedded callers using the cached factory must explicitly pass `{ allowExternalFileAccess: true }`
+for trusted SQLite access. Direct providers without an execution context retain trusted behavior.

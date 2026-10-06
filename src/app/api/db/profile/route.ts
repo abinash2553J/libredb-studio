@@ -13,6 +13,7 @@ import { type DatabaseProvider, offersColumnProfiling } from "@/lib/db/types";
 import { createErrorResponse } from "@/lib/api/errors";
 import { resolveConnection } from "@/lib/seed/resolve-connection";
 import { guardRoute } from "@/lib/api/require-session";
+import { editorExecutionContext } from "@/lib/api/execution-context";
 import {
   jsonCommandAddress,
   objectSegment,
@@ -211,7 +212,7 @@ export async function POST(req: NextRequest) {
     // The LABEL, for the response alone: the profiler names its export after it.
     const tableName = objectSegment(path);
 
-    const provider = await getOrCreateProvider(connection);
+    const provider = await getOrCreateProvider(connection, {}, editorExecutionContext(guard.session, connection));
 
     {
       const capabilities = provider.getCapabilities();
@@ -270,7 +271,11 @@ export async function POST(req: NextRequest) {
 
         const totalRows = totalCountResult.rows[0]?.count || sampleResult.rows.length;
         const columnProfiles = colList.map((col) => {
-          const values = sampleResult.rows.map((r) => valueAtPath(r, col)).filter((v) => v !== undefined);
+          // Absent and `null` are both empty (#1456): MongoDB has no declared nullability, so
+          // counting only the absent ones made an explicit null a value, and a distinct one.
+          // The samples keep the nulls, shown as `NULL` like the SQL branch shows them.
+          const present = sampleResult.rows.map((r) => valueAtPath(r, col)).filter((v) => v !== undefined);
+          const values = present.filter((v) => v !== null);
           const nullCount = sampleResult.rows.length - values.length;
           const distinctValues = new Set(values.map((v) => JSON.stringify(v)));
 
@@ -283,7 +288,7 @@ export async function POST(req: NextRequest) {
             distinctCount: distinctValues.size,
             // Spelled as the SQL branch spells them: a subdocument or an array as its JSON
             // (`String` answered `[object Object]`), and a null as `NULL`.
-            sampleValues: values.slice(0, 5).map((v) => (v === null ? "NULL" : renderValue(v))),
+            sampleValues: present.slice(0, 5).map((v) => (v === null ? "NULL" : renderValue(v))),
           };
         });
 
