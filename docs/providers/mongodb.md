@@ -189,6 +189,12 @@ Caveats baked into this approach:
   it, and the profiler reads a dotted column by walking the sampled document, so `address.city` is
   profiled from its real values rather than as absent. A top-level key that literally contains a
   dot is walked the same way, as a nested path, so it profiles as absent.
+- **Generated test data reconstructs nested paths.** Generate Test Data treats dotted
+  inferred columns as nested paths: when `address`, `address.city`, and `address.geo.lat` are
+  present, only the leaf fields are generated and the resulting document is rebuilt as
+  `{ address: { city, geo: { lat } } }`. A parent path with listed descendants does not receive a
+  scalar value. An `object` field with no listed descendants is generated as `{}`.
+
 - **Arrays are named and left closed.** `items.sku` addresses one value *per array entry*, so it
   does not mean on an array what the same syntax means on a subdocument; listing it in a flat field
   list would invite exactly that confusion. Date, ObjectId, Binary, Decimal128 and every other
