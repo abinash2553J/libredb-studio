@@ -1180,6 +1180,23 @@ describe("TestDataGenerator value typing (#1468)", () => {
     }
   });
 
+  test("MongoDB ObjectId and UUID values come from crypto.getRandomValues, not Math.random", () => {
+    const original = Math.random;
+    Math.random = () => 0;
+    try {
+      const docs = (JSON.parse(executed(typed, jsonCaps)) as { documents: Record<string, unknown>[] }).documents;
+      const oids = new Set(docs.map((doc) => (doc.owner as { $oid: string }).$oid));
+      const uuids = new Set(docs.map((doc) => (doc.ref as { $uuid: string }).$uuid));
+      expect(oids.size).toBe(docs.length);
+      expect(uuids.size).toBe(docs.length);
+      for (const uuid of uuids) {
+        expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      }
+    } finally {
+      Math.random = original;
+    }
+  });
+
   test("the column chips name the generator each MongoDB value is written with", () => {
     const { container } = render(
       <TestDataGenerator

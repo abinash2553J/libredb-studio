@@ -156,6 +156,23 @@ function inferDocumentFakerType(path: string, declared: string): { generator: st
 }
 
 /**
+ * Random hex from `crypto.getRandomValues`, which every browser exposes on plain HTTP too. The
+ * values are fake, but an ObjectId and a UUID are identifiers, and CodeQL reads `Math.random`
+ * behind an identifier as a weak secret (js/insecure-randomness).
+ */
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function randomUuidV4(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
  * One generated value for a MongoDB field, in the JSON type its inferred type names. The command
  * is read as Extended JSON by the provider, so a date, an ObjectId, a UUID, a 64-bit integer and a
  * Decimal128 are written as their `$date`, `$oid`, `$uuid`, `$numberLong` and `$numberDecimal`
@@ -173,9 +190,9 @@ function documentFieldValue(generator: string, declared: string, index: number):
     case "boolean":
       return Math.random() > 0.5;
     case "objectId":
-      return { $oid: Array.from({ length: 24 }, () => Math.floor(Math.random() * 16).toString(16)).join("") };
+      return { $oid: randomHex(12) };
     case "uuid":
-      return { $uuid: FAKE.uuid() };
+      return { $uuid: randomUuidV4() };
   }
   // A BSON date. Any other field whose name picked the datetime generator, such as a BSON
   // Timestamp, keeps the text it had: a `$date` would change its type.
