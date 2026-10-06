@@ -247,7 +247,7 @@ export function TestDataGenerator({
         for (const col of leafCols) {
           const gen = FAKE[col.faker.generator as keyof typeof FAKE];
           const type = (col.baseType ?? col.type).toLowerCase();
-          const value = type.includes("object") ? {} : gen ? gen(i) : `value_${i}`;
+          const value = type === "object" ? {} : gen ? gen(i) : `value_${i}`;
           setNestedValue(doc, col.name, value);
         }
         return doc;
