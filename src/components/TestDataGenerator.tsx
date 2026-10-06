@@ -97,6 +97,21 @@ function inferFakerType(colName: string, colType: string): { generator: string; 
   return { generator: "text", example: "Lorem ipsum" };
 }
 
+function setNestedValue(doc: Record<string, unknown>, path: string, value: unknown): void {
+  const parts = path.split(".");
+  let current = doc;
+
+  for (let index = 0; index < parts.length - 1; index++) {
+    const part = parts[index];
+    if (typeof current[part] !== "object" || current[part] === null) {
+      current[part] = {};
+    }
+    current = current[part] as Record<string, unknown>;
+  }
+
+  current[parts[parts.length - 1]] = value;
+}
+
 // Lightweight fake data generators
 const FAKE = {
   autoIncrement: (i: number) => String(i + 1),
@@ -219,11 +234,21 @@ export function TestDataGenerator({
     // for the address below; `queryLanguage` is the same field and stays in the deps.
     if (capabilities?.queryLanguage === "json") {
       // MongoDB insertMany
+      // The inferred schema contains parent paths alongside their dotted children.
+      // Generate values for leaves and rebuild those paths as nested objects.
+      const leafCols = cols.filter(
+        (col) =>
+          !cols.some(
+            (other) => other.name !== col.name && other.name.startsWith(`${col.name}.`),
+          ),
+      );
       const docs = Array.from({ length: rowCount }, (_, i) => {
-        const doc: Record<string, string> = {};
-        for (const col of cols) {
+        const doc: Record<string, unknown> = {};
+        for (const col of leafCols) {
           const gen = FAKE[col.faker.generator as keyof typeof FAKE];
-          doc[col.name] = gen ? gen(i) : `value_${i}`;
+          const type = (col.baseType ?? col.type).toLowerCase();
+          const value = type.includes("object") ? {} : gen ? gen(i) : `value_${i}`;
+          setNestedValue(doc, col.name, value);
         }
         return doc;
       });
