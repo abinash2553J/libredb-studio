@@ -237,10 +237,7 @@ export function TestDataGenerator({
       // The inferred schema contains parent paths alongside their dotted children.
       // Generate values for leaves and rebuild those paths as nested objects.
       const leafCols = cols.filter(
-        (col) =>
-          !cols.some(
-            (other) => other.name !== col.name && other.name.startsWith(`${col.name}.`),
-          ),
+        (col) => !cols.some((other) => other.name !== col.name && other.name.startsWith(`${col.name}.`)),
       );
       const docs = Array.from({ length: rowCount }, (_, i) => {
         const doc = Object.create(null) as Record<string, unknown>;
