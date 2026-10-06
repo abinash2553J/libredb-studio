@@ -423,6 +423,43 @@ describe("TestDataGenerator", () => {
     expect(doc.address).not.toBe("value_0");
   });
 
+  test("treats __proto__ as a normal MongoDB field", () => {
+    const nestedSchema: DetailedObject = {
+      name: "profiles",
+      kind: "table",
+      path: ["shop", "profiles"],
+      indexes: [],
+      columns: [
+        { name: "__proto__", type: "object", nullable: true, isPrimary: false },
+        { name: "__proto__.isAdmin", type: "BOOLEAN", nullable: true, isPrimary: false },
+      ],
+    };
+    const onExecuteQuery = mock((q: string) => {
+      void q;
+    });
+
+    expect(({} as Record<string, unknown>).isAdmin).toBeUndefined();
+
+    const { queryByText } = render(
+      <TestDataGenerator
+        isOpen
+        onClose={mock(() => {})}
+        tablePath={["shop", "profiles"]}
+        tableSchema={nestedSchema}
+        capabilities={jsonCaps}
+        onExecuteQuery={onExecuteQuery}
+      />,
+    );
+
+    fireEvent.click(queryByText("Execute")!);
+    const raw = onExecuteQuery.mock.calls[0][0] as string;
+    const doc = (JSON.parse(raw) as { documents: Record<string, unknown>[] }).documents[0];
+
+    expect(({} as Record<string, unknown>).isAdmin).toBeUndefined();
+    expect(doc).toHaveProperty("__proto__");
+    expect(doc["__proto__"]).toEqual({ isAdmin: expect.any(String) });
+  });
+
   test("generates an empty object for a standalone MongoDB object field", () => {
     const nestedSchema: DetailedObject = {
       name: "profiles",
