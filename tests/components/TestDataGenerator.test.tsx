@@ -419,7 +419,7 @@ describe("TestDataGenerator", () => {
 
     expect(address.city).toBeDefined();
     expect(geo.lat).toBeDefined();
-    expect(Object.keys(doc).some((key) => key.includes(".")).toBe(false);
+    expect(Object.keys(doc).some((key) => key.includes("."))).toBe(false);
     expect(doc.address).not.toBe("value_0");
   });
 
