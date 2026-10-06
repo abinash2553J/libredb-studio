@@ -202,6 +202,8 @@ Caveats baked into this approach:
   `array` as `[]`, `null` as `null`, and `date`, `objectId`, `uuid`, `long` and `decimal` as the
   `$date`, `$oid`, `$uuid`, `$numberLong` and `$numberDecimal` wrappers, which the query reader
   ([§3.1](#extended-json-in-the-query)) turns into those BSON types. A `mixed(...)` field is written as its first non-null type.
+  The driver reads both int32 and double as a JS number, so sampling reports `number` for both, and a `number`
+  field is written as an integer (BSON int32) unless its leaf name picks a decimal-valued generator such as `price`.
   `_id` is left to the server. Measured on `mongo:7` on 2026-10-06: the generated command ran
   through the provider and `$type` read back `int`, `double`, `long`, `decimal`, `bool`, `array`,
   `date`, `objectId`, `binData` (UUID subtype 4) and `null`.

@@ -2422,14 +2422,14 @@ export interface ObjectKindSpec {
    *
    * The engine-wide `supportsInlineRowEdit` stays, and it is a SEPARATE fact rather than
    * the other half of a conjunction. It gates the results grid's inline row editor
-   * (`canEditRows` in `src/components/Studio.tsx`), and the two row menus, which need both
-   * facts for Generate Test Data, conjoin it with this field at the call site. MongoDB,
+   * (`canEditRows` in `src/components/Studio.tsx`), and no row menu reads it. MongoDB,
    * Couchbase and Cassandra declare it false, and #789 declares a kind that accepts row
    * writes on each of those three, so requiring both would refuse an import all three
    * engines do support.
    * Read this field through `kindAcceptsRowWrites()` in `src/lib/db/object-kinds.ts`,
-   * whose name states that scope; a caller that needs the editor gate as well reads
-   * both.
+   * whose name states that scope. The two row menus ask `offersTestDataGeneration()`
+   * there for Generate Test Data, which conjoins this field with the engine-wide
+   * `supportsTestDataGeneration` rather than with `supportsInlineRowEdit` (#1468).
    */
   readonly acceptsRowWrites?: boolean;
   /**
